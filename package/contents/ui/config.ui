@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ScenicViewConfigForm</class>
+ <widget class="QWidget" name="ScenicViewConfigForm">
+  <property name="windowTitle">
+   <string>Scenic View</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <widget class="QLabel" name="labelReload">
+     <property name="text">
+      <string>&lt;b&gt;Changes take effect only after the script is reloaded:&lt;/b&gt; uncheck Scenic View in the list, click Apply, check it again, click Apply.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="textFormat">
+      <enum>Qt::RichText</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupGaps">
+     <property name="title">
+      <string>Gaps (tiled and maximized windows)</string>
+     </property>
+     <layout class="QFormLayout" name="formGaps">
+      <item row="0" column="0">
+       <widget class="QLabel" name="labelOuterH">
+        <property name="text">
+         <string>Edges, left/right:</string>
+        </property>
+        <property name="buddy">
+         <cstring>kcfg_OuterGapHorizontal</cstring>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QSpinBox" name="kcfg_OuterGapHorizontal">
+        <property name="suffix">
+         <string> px</string>
+        </property>
+        <property name="maximum">
+         <number>200</number>
+        </property>
+        <property name="value">
+         <number>32</number>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="labelOuterV">
+        <property name="text">
+         <string>Edges, top/bottom:</string>
+        </property>
+        <property name="buddy">
+         <cstring>kcfg_OuterGapVertical</cstring>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QSpinBox" name="kcfg_OuterGapVertical">
+        <property name="suffix">
+         <string> px</string>
+        </property>
+        <property name="maximum">
+         <number>200</number>
+        </property>
+        <property name="value">
+         <number>32</number>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="labelInnerGap">
+        <property name="text">
+         <string>Between tiled windows:</string>
+        </property>
+        <property name="buddy">
+         <cstring>kcfg_InnerGap</cstring>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QSpinBox" name="kcfg_InnerGap">
+        <property name="suffix">
+         <string> px</string>
+        </property>
+        <property name="maximum">
+         <number>200</number>
+        </property>
+        <property name="value">
+         <number>16</number>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QCheckBox" name="kcfg_ApplyToCustomTiles">
+        <property name="text">
+         <string>Also apply to custom tile layouts (Meta+T editor)</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0" colspan="2">
+       <widget class="QLabel" name="labelGapsHint">
+        <property name="text">
+         <string>Edge gaps are measured to the edges of the work area, i.e. to panels.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupScenic">
+     <property name="title">
+      <string>Scenic view</string>
+     </property>
+     <layout class="QFormLayout" name="formScenic">
+      <item row="0" column="0">
+       <widget class="QLabel" name="labelScenicH">
+        <property name="text">
+         <string>Margin, left/right:</string>
+        </property>
+        <property name="buddy">
+         <cstring>kcfg_ScenicGapHorizontal</cstring>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QSpinBox" name="kcfg_ScenicGapHorizontal">
+        <property name="suffix">
+         <string> px</string>
+        </property>
+        <property name="maximum">
+         <number>1000</number>
+        </property>
+        <property name="value">
+         <number>80</number>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="labelScenicV">
+        <property name="text">
+         <string>Margin, top/bottom:</string>
+        </property>
+        <property name="buddy">
+         <cstring>kcfg_ScenicGapVertical</cstring>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QSpinBox" name="kcfg_ScenicGapVertical">
+        <property name="suffix">
+         <string> px</string>
+        </property>
+        <property name="maximum">
+         <number>1000</number>
+        </property>
+        <property name="value">
+         <number>80</number>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="2">
+       <widget class="QLabel" name="labelScenicHint">
+        <property name="text">
+         <string>Toggle with Meta+Alt+S (change under System Settings → Keyboard → Shortcuts → KWin → "Toggle Scenic View").</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
