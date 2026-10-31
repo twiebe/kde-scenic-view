@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Usage: node tests/kwin-mock.test.js package/contents/code/main.js
+//
 // Mock of the KWin 6.7 scripting API, modeled on the behavior read from the source:
-// - maximize is async (client ack), KWin sets the full MaximizeArea geometry
+// - maximize() emits maximizedAboutToChange first, sets the requested geometry and
+//   schedules a configure; the client acknowledges later (flush()). Requests made
+//   before the configure is sent are merged, so the client only sees the last one.
 // - scripts may resize a maximized window without changing its maximize mode
 // - un-maximize restores the geometry saved at maximize time
-// - Tile.padding setter propagates and resizes managed windows
+// - Tile.padding setter propagates and resizes managed windows; child tiles
+//   inherit the parent's padding
+// - zero timers (QTimer) run in the event loop in FIFO order with configures
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -18,8 +23,16 @@ function signal() {
 }
 
 let AREA = { x: 0, y: 40, width: 1440, height: 920 }; // panel at top: 40px
-const queue = [];
-const flush = () => { while (queue.length) queue.shift()(); };
+const queue = []; // event loop
+const flush = () => { let n = 0; while (queue.length) { assert(++n < 1000, "event loop runaway"); queue.shift()(); } };
+
+class QTimer {
+    constructor() { this.interval = 0; this.singleShot = false; this.active = false; this.timeout = signal(); QTimer.all.push(this); }
+    start() { this.active = true; if (this.singleShot && this.interval === 0) { queue.push(() => { if (this.active) { this.active = false; this.timeout(); } }); } }
+    stop() { this.active = false; }
+}
+QTimer.all = [];
+const tickPolling = () => { QTimer.all.filter((t) => t.active && !t.singleShot).forEach((t) => t.timeout()); flush(); };
 
 class Tile {
     // KWin: a child tile inherits the parent's padding
@@ -36,6 +49,7 @@ class Tile {
     get relativeGeometry() { return { x: this.rel.x, y: this.rel.y, width: this.rel.w, height: this.rel.h }; }
     get absoluteGeometry() { return { x: AREA.x + this.rel.x * AREA.width, y: AREA.y + this.rel.y * AREA.height, width: this.rel.w * AREA.width, height: this.rel.h * AREA.height }; }
     manage(w) { w._tileTo(this); return true; }
+    unmanage(w) { if (w._tile === this) w._untile(); return true; }
 }
 
 let nextId = 1;
@@ -43,47 +57,73 @@ class Win {
     constructor(geom, opts = {}) {
         this.internalId = `{uuid-${nextId++}}`;
         this.normalWindow = true; this.resizeable = true; this.moveable = true; this.fullScreen = false; this.maximizable = true;
-        this.maximizeMode = 0; this._geom = { ...geom }; this._restore = null; this._tile = null;
+        this.maximizeMode = 0; this._reqMode = undefined; this._geom = { ...geom }; this._restore = null; this._tile = null;
+        this._pending = null; this._scheduled = false;
         this.sizeIncrement = opts.sizeIncrement || 0; // e.g. terminal rounding
         this.minWidth = opts.minWidth || 0;
-        this.maximizedChanged = signal(); this.frameGeometryChanged = signal(); this.tileChanged = signal();
-        this.interactiveMoveResizeFinished = signal(); this.move = false; this.resize = false;
-        this.sets = 0;
+        this.maximizedChanged = signal(); this.maximizedAboutToChange = signal(); this.frameGeometryChanged = signal(); this.tileChanged = signal();
+        this.interactiveMoveResizeStarted = signal(); this.interactiveMoveResizeFinished = signal(); this.move = false; this.resize = false;
+        this.sets = 0; this.maximizedSeen = 0; // how often the client saw a maximized state
     }
     get tile() { return this._tile; }
     set tile(t) { if (t) this._tileTo(t); else if (this._tile) this._untile(); } // KWin 6.3 API
     get frameGeometry() { return { ...this._geom }; }
-    set frameGeometry(r) { this.sets++; assert(this.sets < 50, "geometry set loop"); this._setGeom(r); }
+    set frameGeometry(r) { this.sets++; assert(this.sets < 50, "geometry set loop"); this._request({ ...r }); }
+    get requestedMode() { return this._reqMode === undefined ? this.maximizeMode : this._reqMode; }
     _setGeom(r) {
         let g = { ...r };
         if (this.sizeIncrement) { g.width = Math.floor(g.width / this.sizeIncrement) * this.sizeIncrement; g.height = Math.floor(g.height / this.sizeIncrement) * this.sizeIncrement; }
         if (this.minWidth && g.width < this.minWidth) { g.width = this.minWidth; }
         const old = this._geom; this._geom = g; this.frameGeometryChanged(old);
     }
+    // Geometry requests apply immediately, unless a configure is pending (then they merge into it).
+    _request(g) { if (this._scheduled) { this._pending = g; } else { this._setGeom(g); } }
+    _commit() {
+        this._scheduled = false;
+        const g = this._pending; this._pending = null;
+        if (g) this._setGeom(g);
+        if (this.maximizeMode !== this.requestedMode) {
+            this.maximizeMode = this.requestedMode;
+            if (this.maximizeMode) this.maximizedSeen++;
+            this.maximizedChanged();
+        }
+    }
     setMaximize(v, h) {
         const mode = (v ? 1 : 0) | (h ? 2 : 0);
-        if (mode === this.maximizeMode) return;
-        if (mode && !this.maximizeMode) { this._restore = this._tile ? this._restore : { ...this._geom }; if (this._tile) { this._untile(); } }
-        queue.push(() => {
-            if (mode) { const g = { ...this._geom }; if (mode & 2) { g.x = AREA.x; g.width = AREA.width; } if (mode & 1) { g.y = AREA.y; g.height = AREA.height; } this._setGeom(g); } else this._setGeom(this._restore);
-            this.maximizeMode = mode; this.maximizedChanged();
-        });
+        const old = this.requestedMode;
+        if (mode === old) return;
+        this.maximizedAboutToChange(mode);
+        const cur = this._pending || this._geom;
+        if (mode && !old) { if (!this._tile) this._restore = { ...cur }; else this._untile(); }
+        this._reqMode = mode;
+        let g = { ...cur };
+        if (mode) { if (mode & 2) { g.x = AREA.x; g.width = AREA.width; } if (mode & 1) { g.y = AREA.y; g.height = AREA.height; } } else { g = { ...this._restore }; }
+        this._pending = g;
+        if (!this._scheduled) { this._scheduled = true; queue.push(() => this._commit()); }
     }
-    _tileTo(tile) { this._restore = { ...this._geom }; this.maximizeMode = 0; this._tile = tile; tile.windows.push(this); this.tileChanged(tile); this._setGeom(tile.windowGeometry()); }
+    _tileTo(tile) { this._restore = { ...this._geom }; this.maximizeMode = 0; this._reqMode = 0; this._tile = tile; tile.windows.push(this); this.tileChanged(tile); this._request(tile.windowGeometry()); }
     _untile() { const t = this._tile; t.windows.splice(t.windows.indexOf(this), 1); this._tile = null; this.tileChanged(null); }
     workareaChanged() { if (this.maximizeMode) { const g = { ...this._geom }; if (this.maximizeMode & 2) { g.x = AREA.x; g.width = AREA.width; } if (this.maximizeMode & 1) { g.y = AREA.y; g.height = AREA.height; } this._setGeom(g); } else if (this._tile) { this._setGeom(this._tile.windowGeometry()); } }
+    // user drags the window by the title bar to (x, y), optionally dropping it on the top edge
+    drag(x, y, dropOnTopEdge) {
+        this.move = true; this.interactiveMoveResizeStarted();
+        this._setGeom({ ...this._geom, x: x, y: y });
+        if (dropOnTopEdge) this.setMaximize(true, true);
+        this.move = false; this.interactiveMoveResizeFinished();
+    }
 }
 
 // --- KWin globals
 let config = {};
 let useShippedDefaults = false;
-const BASE = { OuterGapHorizontal: 12, OuterGapVertical: 12, InnerGap: 12, ScenicGapHorizontal: 120, ScenicGapVertical: 80 };
+// Baseline for the mode b) tests: real maximize (KeepDecorationWhenMaximized=false).
+const BASE = { OuterGapHorizontal: 12, OuterGapVertical: 12, InnerGap: 12, ScenicGapHorizontal: 120, ScenicGapVertical: 80, KeepDecorationWhenMaximized: false };
 const shortcuts = {};
 const windows = [];
 const workspace = {
     activeWindow: null,
     windowList: () => windows.slice(),
-    windowAdded: signal(), windowRemoved: signal(),
+    windowAdded: signal(), windowRemoved: signal(), screensChanged: signal(), virtualScreenGeometryChanged: signal(),
     clientArea: () => ({ ...AREA }),
 };
 const options = { configChanged: signal() };
@@ -91,7 +131,7 @@ const ctx = vm.createContext({
     // Tests run against a fixed baseline; the "shipped defaults" test bypasses it.
     readConfig: (k, d) => (useShippedDefaults ? d : k in config ? config[k] : k in BASE ? BASE[k] : d),
     registerShortcut: (id, text, keys, cb) => { shortcuts[id] = cb; },
-    KWin: { MaximizeArea: 2 }, workspace, options, console,
+    KWin: { MaximizeArea: 2 }, workspace, options, console, QTimer,
 });
 
 function addWindow(geom, opts) { const w = new Win(geom, opts); windows.push(w); workspace.windowAdded(w); return w; }
@@ -104,6 +144,9 @@ const pre = new Win({ x: 100, y: 100, width: 800, height: 600 }); windows.push(p
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx, { filename: "main.js" });
 const toggle = shortcuts.ScenicViewToggle;
 assert(toggle, "shortcut registered");
+
+// ===========================================================================
+// Mode b) real maximize (KeepDecorationWhenMaximized = false)
 
 test("maximize -> regular gap to work area (incl. panel)", () => {
     const w = addWindow({ x: 100, y: 100, width: 800, height: 600 });
@@ -383,6 +426,180 @@ test("shipped defaults: edges 32, between 16, scenic 80/80", () => {
     workspace.activeWindow = m; toggle(); flush();
     assert.strictEqual(R(m.frameGeometry), "80,120 1280x760");
     useShippedDefaults = false;
+});
+
+
+// ===========================================================================
+// Mode a) keep decoration (KeepDecorationWhenMaximized = true, the default)
+
+const A = { KeepDecorationWhenMaximized: true };
+
+test("[a] maximize -> normal window at gap rect, client never sees maximized", () => {
+    config = A;
+    const w = addWindow({ x: 100, y: 120, width: 800, height: 600 });
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    assert.strictEqual(w.maximizeMode, 0);
+    assert.strictEqual(w.maximizedSeen, 0);
+    config = {};
+});
+
+test("[a] maximize again (button/double-click) restores original geometry", () => {
+    config = A;
+    const w = addWindow({ x: 100, y: 120, width: 800, height: 600 });
+    w.setMaximize(true, true); flush();
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "100,120 800x600");
+    assert.strictEqual(w.maximizeMode, 0);
+    assert.strictEqual(w.maximizedSeen, 0);
+    config = {};
+});
+
+test("[a] partial maximize still uses real maximize with gap on that axis", () => {
+    config = A;
+    const w = addWindow({ x: 200, y: 300, width: 600, height: 400 });
+    w.setMaximize(true, false); flush();
+    assert.strictEqual(R(w.frameGeometry), "200,52 600x896");
+    assert.strictEqual(w.maximizeMode, 1);
+    config = {};
+});
+
+test("[a] panel change (no signal) picked up by polling", () => {
+    config = A;
+    const w = addWindow({ x: 100, y: 120, width: 800, height: 600 });
+    w.setMaximize(true, true); flush();
+    AREA = { x: 0, y: 0, width: 1440, height: 960 };
+    tickPolling();
+    assert.strictEqual(R(w.frameGeometry), "12,12 1416x936");
+    AREA = { x: 0, y: 40, width: 1440, height: 920 };
+    tickPolling();
+    assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    w.setMaximize(true, true); flush();
+    config = {};
+});
+
+test("[a] scenic from floating and back", () => {
+    config = A;
+    const w = addWindow({ x: 300, y: 200, width: 700, height: 500 });
+    workspace.activeWindow = w; toggle(); flush();
+    assert.strictEqual(R(w.frameGeometry), "120,120 1200x760");
+    assert.strictEqual(w.maximizeMode, 0);
+    toggle(); flush();
+    assert.strictEqual(R(w.frameGeometry), "300,200 700x500");
+    config = {};
+});
+
+test("[a] scenic from maximized, back to maximized, then restore original", () => {
+    config = A;
+    const w = addWindow({ x: 300, y: 200, width: 700, height: 500 });
+    w.setMaximize(true, true); flush();
+    workspace.activeWindow = w; toggle(); flush();
+    assert.strictEqual(R(w.frameGeometry), "120,120 1200x760");
+    toggle(); flush();
+    assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "300,200 700x500");
+    config = {};
+});
+
+test("[a] maximize button while in scenic view restores original", () => {
+    config = A;
+    const w = addWindow({ x: 300, y: 200, width: 700, height: 500 });
+    workspace.activeWindow = w; toggle(); flush();
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "300,200 700x500");
+    assert.strictEqual(w.maximizedSeen, 0);
+    config = {};
+});
+
+test("[a] tiled window: maximize and back re-tiles it", () => {
+    config = A;
+    const root = new Tile("QuickRootTile", null, { x: 0, y: 0, w: 1, h: 1 });
+    const left = new Tile("Tile", root, { x: 0, y: 0, w: 0.5, h: 1 });
+    const w = addWindow({ x: 0, y: 0, width: 300, height: 300 });
+    left.manage(w); flush();
+    assert.strictEqual(R(w.frameGeometry), "12,52 702x896");
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    assert.strictEqual(w.tile, null);
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(w.tile, left);
+    assert.strictEqual(R(w.frameGeometry), "12,52 702x896");
+    config = {};
+});
+
+test("[a] scenic on tiled window and back re-tiles it", () => {
+    config = A;
+    const root = new Tile("QuickRootTile", null, { x: 0, y: 0, w: 1, h: 1 });
+    const right = new Tile("Tile", root, { x: 0.5, y: 0, w: 0.5, h: 1 });
+    const w = addWindow({ x: 0, y: 0, width: 300, height: 300 });
+    right.manage(w); flush();
+    workspace.activeWindow = w; toggle(); flush();
+    assert.strictEqual(R(w.frameGeometry), "120,120 1200x760");
+    assert.strictEqual(w.tile, null);
+    toggle(); flush();
+    assert.strictEqual(w.tile, right);
+    assert.strictEqual(R(w.frameGeometry), "726,52 702x896");
+    config = {};
+});
+
+test("[a] dragging a maximized window makes it a normal window", () => {
+    config = A;
+    const w = addWindow({ x: 100, y: 120, width: 800, height: 600 });
+    w.setMaximize(true, true); flush();
+    w.drag(200, 300); flush();
+    // maximize now maximizes again (with the dragged geometry as new restore)
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "200,300 1416x896");
+    config = {};
+});
+
+test("[a] drag to top edge re-maximizes and keeps the original restore", () => {
+    config = A;
+    const w = addWindow({ x: 100, y: 120, width: 800, height: 600 });
+    w.setMaximize(true, true); flush();
+    w.drag(50, 40, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "100,120 800x600");
+    config = {};
+});
+
+test("[a] window opened maximized -> pseudo-maximized with default restore", () => {
+    config = A;
+    const w = new Win({ x: 0, y: 40, width: 1440, height: 920 }); w.maximizeMode = 3; windows.push(w);
+    workspace.windowAdded(w); flush();
+    assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    assert.strictEqual(w.maximizeMode, 0);
+    w.setMaximize(true, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "288,178 864x644");
+    config = {};
+});
+
+test("[a] size-increment client: no fighting", () => {
+    config = A;
+    const w = addWindow({ x: 100, y: 120, width: 800, height: 600 }, { sizeIncrement: 7 });
+    w.setMaximize(true, true); flush();
+    const sets = w.sets;
+    for (let i = 0; i < 5; i++) { w.frameGeometryChanged(); tickPolling(); }
+    assert.strictEqual(w.sets, sets, `extra sets: ${w.sets - sets}`);
+    assert.strictEqual(w.frameGeometry.x, 12);
+    config = {};
+});
+
+test("[a] tiling a pseudo-maximized window ends pseudo state", () => {
+    config = A;
+    const root = new Tile("QuickRootTile", null, { x: 0, y: 0, w: 1, h: 1 });
+    const left = new Tile("Tile", root, { x: 0, y: 0, w: 0.5, h: 1 });
+    const w = addWindow({ x: 100, y: 120, width: 800, height: 600 });
+    w.setMaximize(true, true); flush();
+    left.manage(w); flush();
+    assert.strictEqual(R(w.frameGeometry), "12,52 702x896");
+    w.setMaximize(true, true); flush(); // fresh maximize from the tile
+    assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    config = {};
 });
 
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
