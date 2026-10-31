@@ -38,7 +38,7 @@ same scripting API, but this has not been tried.
 ## Installation
 
 ```bash
-git clone <repository URL>/kde-scenic-view.git
+git clone https://github.com/twiebe/kde-scenic-view.git
 cd kde-scenic-view
 ./install.sh
 ```
