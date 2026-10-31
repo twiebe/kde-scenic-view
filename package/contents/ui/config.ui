@@ -104,7 +104,20 @@
         </property>
        </widget>
       </item>
-      <item row="4" column="0" colspan="2">
+      <item row="4" column="1">
+       <widget class="QCheckBox" name="kcfg_KeepDecorationWhenMaximized">
+        <property name="text">
+         <string>Keep shadow and rounded corners on maximized windows</string>
+        </property>
+        <property name="toolTip">
+         <string>Maximized windows become normal windows sized to the gapped area. The maximize button then shows them as not maximized, and dragging them keeps their size.</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0" colspan="2">
        <widget class="QLabel" name="labelGapsHint">
         <property name="text">
          <string>Edge gaps are measured to the edges of the work area, i.e. to panels.</string>

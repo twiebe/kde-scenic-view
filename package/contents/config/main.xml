@@ -30,6 +30,9 @@
       <min>0</min>
       <max>1000</max>
     </entry>
+    <entry name="KeepDecorationWhenMaximized" type="Bool">
+      <default>true</default>
+    </entry>
     <entry name="ApplyToCustomTiles" type="Bool">
       <default>true</default>
     </entry>

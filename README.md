@@ -13,8 +13,12 @@ layouts (Meta+T) and maximizing.
 - **Gaps for tiled windows**: one gap between tiled windows, separate gaps to the
   screen edges for left/right and top/bottom.
 - **Gaps for maximized windows**: maximizing (title bar double-click, maximize
-  button, Meta+PgUp) leaves the edge gaps free. The window stays a real maximized
-  window, so the maximize button, un-maximize and drag-to-restore keep working.
+  button, Meta+PgUp) leaves the edge gaps free.
+- **Shadow and rounded corners stay**: KWin and Breeze draw maximized windows
+  without shadow and rounded corners. By default, maximized windows therefore become
+  normal windows sized to the gapped area, so they keep both. Maximizing again
+  restores the previous size. This can be switched off to use real maximized windows
+  instead (see [Maximize modes](#maximize-modes)).
 - **Gaps are measured to panels**, not to the screen edge. Since maximized windows
   no longer touch a floating panel, the panel stays floating.
 - **Scenic view**: a shortcut (default **Meta+Alt+S**) toggles the active window
@@ -44,8 +48,12 @@ cd kde-scenic-view
 ```
 
 `install.sh` installs the script for the current user with `kpackagetool6`, enables
-it and reloads KWin. It needs no root. Run it again to update; it upgrades the
-package and restarts the script.
+it and reloads KWin. It needs no root.
+
+**Updating:** after pulling a new version, run `./install.sh` again. It upgrades the
+installed package and restarts the script; no need to uninstall first. Reloading the
+script in System Settings is not enough after a code update, because KWin runs the
+installed copy in `~/.local/share/kwin/scripts/scenicview`, not the repository.
 
 Manual installation:
 
@@ -71,6 +79,7 @@ System Settings → Window Management → KWin Scripts → Scenic View → gear 
 | Edges, left/right | 32 px | tiled and maximized windows |
 | Edges, top/bottom | 32 px | tiled and maximized windows |
 | Between tiled windows | 16 px | tiled windows |
+| Keep shadow and rounded corners on maximized windows | on | maximized windows, scenic view |
 | Also apply to custom tile layouts (Meta+T editor) | on | custom tiles |
 | Scenic view margin, left/right | 80 px | scenic view |
 | Scenic view margin, top/bottom | 80 px | scenic view |
@@ -92,27 +101,56 @@ margins are capped so a window never shrinks below half the work area.
   Whenever KWin re-applies the tile geometry (tile resize, panel or screen change),
   the script adjusts the edges again. While you drag a tile border, it waits until
   you let go.
-- **Maximized windows:** KWin keeps a window maximized when a script changes its
-  geometry, so the script shrinks maximized windows by the edge gaps. When KWin
-  resets a maximized window to the full work area, the window reaches into the
-  margin again and the script shrinks it again.
-- **Scenic view** is a maximized window with the scenic margins. Un-maximizing or
-  dragging the window ends scenic view.
+- **Maximized windows:** see [Maximize modes](#maximize-modes).
+- **Scenic view** behaves like a maximized window with the scenic margins.
 - **Custom tile layouts:** with the option enabled, the "between" gap is written to
   the layout's padding. That is the same value as the gap in the Meta+T editor and
   gets saved to `kwinrc`. Disable the option to leave custom layouts alone.
 
+## Maximize modes
+
+**Keep shadow and rounded corners (default).** When a window is about to be
+maximized, the script remembers its geometry, takes the maximize back before the
+application sees it, and resizes the window to the gapped area instead. The window
+stays a normal window, with shadow and (on Plasma 6.5+ with Breeze) four rounded
+corners. The script tracks this "maximized" state itself:
+
+- Maximizing again (button, double-click, Meta+PgUp) restores the previous size, or
+  puts the window back into its tile if it was tiled.
+- Dragging the window or resizing it by hand makes it a normal window again.
+  Dropping it on the top screen edge maximizes it again.
+- Panel and screen changes are picked up. Panel changes have no KWin signal, so the
+  script checks every two seconds while such windows exist.
+
+Trade-offs: the maximize button shows these windows as *not* maximized, dragging one
+keeps its size instead of restoring the previous one, and applications don't know
+they are maximized, so they won't remember it on their next start.
+
+**Real maximize (option off).** KWin keeps a window maximized when a script changes
+its geometry, so the script shrinks maximized windows by the edge gaps. The maximize
+button, un-maximize and drag-to-restore behave exactly as usual. When KWin resets a
+maximized window to the full work area, the window reaches into the margin again and
+the script shrinks it again. Breeze draws maximized windows without shadow and with
+square corners.
+
+Partially maximized windows (vertically or horizontally only) always use real
+maximize with the gap on the maximized axis.
+
 ## Known limitations
 
-- **Decorations:** maximized windows keep the maximized decoration, so Breeze draws
-  square corners and no side borders even though the window doesn't touch the edges.
+- **Decorations in real maximize mode:** Breeze draws square corners and no shadow
+  for maximized windows, even though they don't touch the edges.
+- **Script reload in the default mode:** after a reload, the script no longer knows
+  the previous size of windows it shows as maximized. Maximizing them again restores
+  a centered default size.
 - **Size increments:** apps that resize only in fixed steps (some terminals under
   Xwayland) may end up a few pixels short of the gap on one side. The script accepts
   that instead of fighting the app.
 - **Manual placement:** only tiled and maximized windows get gaps. Windows you place
   or resize by hand against an edge are left alone.
 - **Scenic view after reload:** reloading the script forgets which windows were in
-  scenic view. They become regular maximized windows with gaps.
+  scenic view. In real maximize mode they become regular maximized windows with gaps;
+  in the default mode they stay where they are as normal windows.
 - **Settings need a reload** (see above). KWin re-reads script settings only when the
   script restarts.
 
@@ -141,12 +179,16 @@ Run the tests with Node.js:
 node tests/kwin-mock.test.js package/contents/code/main.js
 ```
 
-The mock is modeled on the KWin 6.7.5 source: asynchronous maximize, partial
-maximize, tile padding inheritance and propagation, and the 6.3 `window.tile`
-fallback. The tests cover gaps for maximized and tiled windows (including edge gaps
-smaller than the "between" gap), work area changes, tile border dragging, scenic view
-from maximized, floating and tiled windows, size-increment clients, clients that
-refuse the smaller size, and script reloads. The mock is not KWin; check changes in a
+The mock is modeled on the KWin 6.7.5 source: `maximizedAboutToChange` before a
+maximize, configures that merge requests until the client acknowledges, zero timers
+in the event loop, partial maximize, tile padding inheritance and propagation, and
+the 6.3 `window.tile` fallback. The tests cover both maximize modes: gaps for
+maximized and tiled windows (including edge gaps smaller than the "between" gap),
+the application never seeing a maximized state in the default mode, restoring and
+re-tiling, dragging and dropping on the top edge, windows opened maximized, work area
+and panel changes, tile border dragging, scenic view from maximized, floating and
+tiled windows, size-increment clients, clients that refuse the smaller size, and
+script reloads. The mock is not KWin; check changes in a
 real session too.
 
 ## License
