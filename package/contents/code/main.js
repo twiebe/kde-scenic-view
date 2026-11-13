@@ -287,12 +287,19 @@ function pseudoTarget(w, p, cfg) {
 function fitPseudo(w) {
     const k = key(w);
     const p = pseudo.get(k);
-    if (!p || busy.has(k) || w.move || w.resize) {
+    // Fullscreen (e.g. a video in the browser) covers the whole screen; the
+    // window stays pseudo-maximized and is fitted again when it leaves fullscreen.
+    if (!p || busy.has(k) || w.fullScreen || w.move || w.resize) {
+        return;
+    }
+    // On Wayland, KWin applies the fullscreen geometry before w.fullScreen turns
+    // true, so a window covering the whole screen is treated as fullscreen too.
+    const g = w.frameGeometry;
+    if (sameRect(g, workspace.clientArea(KWin.FullScreenArea, w))) {
         return;
     }
     p.area = rectOf(workArea(w));
     const target = pseudoTarget(w, p, config());
-    const g = w.frameGeometry;
     if (sameRect(g, target) || roundedFrom(g, target) || rateLimited(k)) {
         return;
     }
@@ -537,6 +544,11 @@ function setup(w) {
         }
         applyMaximizeGap(w, false);
         applyTileEdges(w);
+    });
+    w.fullScreenChanged.connect(() => {
+        if (!w.fullScreen && pseudo.has(key(w))) {
+            fitPseudo(w); // the work area may have changed meanwhile
+        }
     });
     w.interactiveMoveResizeStarted.connect(() => {
         if (pseudo.has(key(w))) {

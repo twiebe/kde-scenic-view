@@ -23,6 +23,7 @@ function signal() {
 }
 
 let AREA = { x: 0, y: 40, width: 1440, height: 920 }; // panel at top: 40px
+const SCREEN = { x: 0, y: 0, width: 1440, height: 960 };
 const queue = []; // event loop
 const flush = () => { let n = 0; while (queue.length) { assert(++n < 1000, "event loop runaway"); queue.shift()(); } };
 
@@ -62,6 +63,7 @@ class Win {
         this.sizeIncrement = opts.sizeIncrement || 0; // e.g. terminal rounding
         this.minWidth = opts.minWidth || 0;
         this.maximizedChanged = signal(); this.maximizedAboutToChange = signal(); this.frameGeometryChanged = signal(); this.tileChanged = signal();
+        this.fullScreenChanged = signal(); this._fsRestore = null;
         this.interactiveMoveResizeStarted = signal(); this.interactiveMoveResizeFinished = signal(); this.move = false; this.resize = false;
         this.sets = 0; this.maximizedSeen = 0; // how often the client saw a maximized state
     }
@@ -103,6 +105,17 @@ class Win {
     }
     _tileTo(tile) { this._restore = { ...this._geom }; this.maximizeMode = 0; this._reqMode = 0; this._tile = tile; tile.windows.push(this); this.tileChanged(tile); this._request(tile.windowGeometry()); }
     _untile() { const t = this._tile; t.windows.splice(t.windows.indexOf(this), 1); this._tile = null; this.tileChanged(null); }
+    // Leaving fullscreen restores the geometry from before. X11: KWin sets the
+    // fullscreen state first, then the geometry (screen incl. panels). Wayland: the
+    // new geometry is applied on the client's commit before the acknowledged state.
+    setFullScreen(v, wayland) {
+        if (v === this.fullScreen) return;
+        if (v) this._fsRestore = { ...this._geom };
+        const state = () => { this.fullScreen = v; this.fullScreenChanged(); };
+        if (!wayland) state();
+        this._setGeom(v ? { ...SCREEN } : this._fsRestore);
+        if (wayland) state();
+    }
     workareaChanged() { if (this.maximizeMode) { const g = { ...this._geom }; if (this.maximizeMode & 2) { g.x = AREA.x; g.width = AREA.width; } if (this.maximizeMode & 1) { g.y = AREA.y; g.height = AREA.height; } this._setGeom(g); } else if (this._tile) { this._setGeom(this._tile.windowGeometry()); } }
     // user drags the window by the title bar to (x, y), optionally dropping it on the top edge
     drag(x, y, dropOnTopEdge) {
@@ -124,14 +137,14 @@ const workspace = {
     activeWindow: null,
     windowList: () => windows.slice(),
     windowAdded: signal(), windowRemoved: signal(), screensChanged: signal(), virtualScreenGeometryChanged: signal(),
-    clientArea: () => ({ ...AREA }),
+    clientArea: (opt) => (opt === 4 ? { ...SCREEN } : { ...AREA }),
 };
 const options = { configChanged: signal() };
 const ctx = vm.createContext({
     // Tests run against a fixed baseline; the "shipped defaults" test bypasses it.
     readConfig: (k, d) => (useShippedDefaults ? d : k in config ? config[k] : k in BASE ? BASE[k] : d),
     registerShortcut: (id, text, keys, cb) => { shortcuts[id] = cb; },
-    KWin: { MaximizeArea: 2 }, workspace, options, console, QTimer,
+    KWin: { MaximizeArea: 2, FullScreenArea: 4 }, workspace, options, console, QTimer,
 });
 
 function addWindow(geom, opts) { const w = new Win(geom, opts); windows.push(w); workspace.windowAdded(w); return w; }
@@ -599,6 +612,38 @@ test("[a] tiling a pseudo-maximized window ends pseudo state", () => {
     assert.strictEqual(R(w.frameGeometry), "12,52 702x896");
     w.setMaximize(true, true); flush(); // fresh maximize from the tile
     assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+    config = {};
+});
+
+for (const wayland of [false, true]) {
+    test(`[a] fullscreen (e.g. YouTube) on a pseudo-maximized window stays fullscreen (${wayland ? "Wayland" : "X11"})`, () => {
+        config = A;
+        const w = addWindow({ x: 100, y: 120, width: 800, height: 600 });
+        w.setMaximize(true, true); flush();
+        w.setFullScreen(true, wayland); flush();
+        assert.strictEqual(R(w.frameGeometry), "0,0 1440x960");
+        tickPolling();
+        assert.strictEqual(R(w.frameGeometry), "0,0 1440x960");
+        w.setFullScreen(false, wayland); flush();
+        assert.strictEqual(R(w.frameGeometry), "12,52 1416x896");
+        w.setMaximize(true, true); flush(); // still pseudo-maximized: restores original
+        assert.strictEqual(R(w.frameGeometry), "100,120 800x600");
+        config = {};
+    });
+}
+
+test("[a] fullscreen in scenic view, panel change meanwhile, back to scenic", () => {
+    config = A;
+    const w = addWindow({ x: 300, y: 200, width: 700, height: 500 });
+    workspace.activeWindow = w; toggle(); flush();
+    w.setFullScreen(true, true); flush();
+    AREA = { x: 0, y: 0, width: 1440, height: 960 };
+    tickPolling();
+    assert.strictEqual(R(w.frameGeometry), "0,0 1440x960");
+    w.setFullScreen(false, true); flush();
+    assert.strictEqual(R(w.frameGeometry), "120,80 1200x800");
+    AREA = { x: 0, y: 40, width: 1440, height: 920 };
+    toggle(); flush();
     config = {};
 });
 
